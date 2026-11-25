@@ -18,3 +18,7 @@ binding = "AI"
 binding = "DB"
 database_name = "agent-db"
 database_id = "e31f08b4-7d7e-435c-b409-15dd96558d0a"
+
+[observability.logs]
+enabled = true
+invocation_logs = false

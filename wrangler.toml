@@ -1,13 +1,13 @@
-name = "z3us"          # nama worker = nama repo, huruf kecil
+name = "z3us"
 main = "src/index.js"
 compatibility_date = "2026-01-01"
 
 [vars]
-AGENT_NAME = "z3us"               # id agent, harus sama dengan kolom id di tabel agents
-BOT_USERNAME = "z3usAgentBot"  # username bot Telegram (tanpa @)
+AGENT_NAME = "z3us"
+BOT_USERNAME = "z3usAgentBot"
 IS_COORDINATOR = "false"
-GROUP_CHAT_ID = "-1004427380000"   # id grup Telegram
-OWNER_ID = "1605070949"             # user id Telegram kamu (CEO)
+GROUP_CHAT_ID = "-1004427380000"
+OWNER_ID = "1605070949"
 MODEL = "@cf/meta/llama-3.1-8b-instruct"
 
 [ai]

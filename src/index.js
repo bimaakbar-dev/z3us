@@ -18,18 +18,6 @@ async function webhook(req, env, ctx) {
   const msg = (await req.json()).message;
   if (!msg?.text) return json({ ok: true });
 
-  if (env.DEBUG === 'true') {
-    // balas dengan ID yang dilihat bot (hapus DEBUG setelah selesai)
-    await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: msg.chat.id,
-        text: `DEBUG\nchat=${msg.chat.id}\nfrom=${msg.from?.id}\ncfg_chat=${env.GROUP_CHAT_ID}\ncfg_owner=${env.OWNER_ID}`,
-      }),
-    });
-  }
-
   // hanya grup studio dan hanya CEO yang boleh memberi perintah
   if (String(msg.chat.id) !== String(env.GROUP_CHAT_ID) || String(msg.from?.id) !== String(env.OWNER_ID))
     return json({ ok: true });
@@ -67,9 +55,32 @@ async function handleMessage(env, msg) {
 
   const clean = msg.text.replace(new RegExp('@' + mine, 'ig'), '').trim();
 
+  // /status: status dari D1 (offline jika belum di-bind)
   if (isCoordinator && /^\/status\b/i.test(clean)) {
-    const lines = agents.map((a) => `• ${a.id} — ${a.status} (${a.role})`);
+    const lines = agents.map((a) => {
+      const bound = a.id === env.AGENT_NAME || !!env['AGENT_' + a.id.toUpperCase()];
+      return `• ${a.id} — ${bound ? a.status : 'offline'} (${a.role})`;
+    });
     return sendMessage(env, 'Status studio:\n' + lines.join('\n'), msg.message_id);
+  }
+
+  // /ping: benar-benar menyentuh tiap agent lewat service binding
+  if (isCoordinator && /^\/ping\b/i.test(clean)) {
+    const lines = [];
+    for (const a of agents.filter((x) => x.id !== env.AGENT_NAME)) {
+      const b = env['AGENT_' + a.id.toUpperCase()];
+      let s = 'offline (belum di-bind)';
+      if (b) {
+        try {
+          const r = await b.fetch('https://agent.internal/health');
+          s = r.ok ? 'online ✅' : `error ${r.status}`;
+        } catch {
+          s = 'tidak merespons';
+        }
+      }
+      lines.push(`• ${a.id}: ${s}`);
+    }
+    return sendMessage(env, 'Ping tim:\n' + lines.join('\n'), msg.message_id);
   }
 
   await setStatus(env, 'thinking');
@@ -86,15 +97,28 @@ async function handleMessage(env, msg) {
 // ---------- Koordinator (k1ng) ----------
 async function coordinate(env, msg, text, agents) {
   const team = agents.filter((a) => a.id !== env.AGENT_NAME)
-    .map((a) => `- ${a.id}: ${a.role}`).join('\n');
+    .map((a) => {
+      const bound = !!env['AGENT_' + a.id.toUpperCase()];
+      const live = !bound ? 'offline' : a.status === 'offline' ? 'idle' : a.status;
+      return `- ${a.id}: ${a.role} [status: ${live}]`;
+    }).join('\n');
+
   const system = `${persona.system}
 
-Tim kamu:
+Tim kamu dan status NYATA saat ini:
 ${team}
+
+Aturan:
+- Jangan pernah mengaku agent "aktif" atau "siap" jika statusnya offline. Katakan terus terang bahwa agent itu belum aktif.
+- Kamu TIDAK bisa memanggil, menghubungi, atau mengaktifkan agent lewat percakapan. Satu-satunya tindakan nyata adalah mengisi "delegate". Jangan pernah berkata sudah memanggil atau menghubungi tim. Untuk cek koneksi, arahkan CEO ke perintah /ping.
+- Kamu tidak tahu sisa kuota atau limit AI. Jangan mengarang angka.
+- Delegasikan HANYA jika CEO jelas meminta pekerjaan. Sapaan, pertanyaan status, atau kata "aktifkan" bukan tugas: jawab saja dan kosongkan delegate.
+- Pilih hanya agent yang relevan. Jika agent yang tepat offline, jelaskan dan jangan alihkan ke agent lain.
+- Jangan mengarang hasil pekerjaan.
 
 Balas HANYA dengan JSON valid, tanpa teks lain, bentuknya:
 {"reply":"jawaban singkat untuk CEO","delegate":[{"to":"<id agent>","title":"judul tugas","details":"instruksi jelas"}]}
-"delegate" boleh kosong ([]) jika tidak perlu menugaskan siapa pun. Maksimal 4 tugas.`;
+"delegate" boleh kosong ([]). Maksimal 4 tugas.`;
 
   const raw = await askAI(env, system, text);
   const plan = extractJson(raw) ?? { reply: raw, delegate: [] };
@@ -112,6 +136,11 @@ async function delegate(env, d, agents) {
   const target = agents.find((a) => a.id === d.to && a.id !== env.AGENT_NAME);
   if (!target) return null;
   const title = String(d.title || 'Tugas').slice(0, 200);
+
+  // agent belum ter-deploy / belum di-bind: jangan buat tugas sampah
+  const binding = env['AGENT_' + target.id.toUpperCase()];
+  if (!binding) return { target, title, ok: false };
+
   const now = Date.now();
   const res = await env.DB.prepare(
     'INSERT INTO tasks (title, details, assigned_to, created_by, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -119,19 +148,18 @@ async function delegate(env, d, agents) {
   const taskId = res.meta.last_row_id;
 
   let ok = false;
-  const binding = env['AGENT_' + target.id.toUpperCase()]; // service binding ke worker agent
-  if (binding) {
-    try {
-      const r = await binding.fetch('https://agent.internal/task', {
-        method: 'POST',
-        headers: { authorization: `Bearer ${env.INTERNAL_SECRET}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ task_id: taskId }),
-      });
-      ok = r.status === 202;
-    } catch (e) { console.error('delegate error', e); }
+  try {
+    const r = await binding.fetch('https://agent.internal/task', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${env.INTERNAL_SECRET}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ task_id: taskId }),
+    });
+    ok = r.status === 202;
+  } catch (e) {
+    console.error('delegate error', e);
   }
   if (!ok) {
-    await env.DB.prepare("UPDATE tasks SET status='failed', result='agent belum aktif', updated_at=? WHERE id=?")
+    await env.DB.prepare("UPDATE tasks SET status='failed', result='agent tidak merespons', updated_at=? WHERE id=?")
       .bind(Date.now(), taskId).run();
   }
   await logEvent(env, { type: 'delegate', status: ok ? 'assigned' : 'failed', taskId, message: `${target.id}: ${title}` });

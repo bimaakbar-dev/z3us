@@ -23,7 +23,7 @@ export async function sendMessage(env, text, replyTo) {
   if (!r.ok) console.error('telegram error', r.status, await r.text());
 }
 
-// ---------- AI: Groq -> Gemini -> Workers AI (fallback otomatis) ----------
+// AI: Groq -> Gemini -> Workers AI (fallback otomatis)
 async function viaGroq(env, system, user) {
   const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -82,10 +82,4 @@ export async function askAI(env, system, user) {
     }
   }
   throw lastErr || new Error('Tidak ada penyedia AI yang tersedia');
-}
-
-export function extractJson(raw) {
-  const a = raw.indexOf('{'), b = raw.lastIndexOf('}');
-  if (a === -1 || b <= a) return null;
-  try { return JSON.parse(raw.slice(a, b + 1)); } catch { return null; }
 }

@@ -17,9 +17,29 @@ async function webhook(req, env, ctx) {
     return new Response('forbidden', { status: 403 });
   const msg = (await req.json()).message;
   if (!msg?.text) return json({ ok: true });
-  if (String(msg.chat.id) !== String(env.GROUP_CHAT_ID) || String(msg.from.id) !== String(env.OWNER_ID))
+
+  if (env.DEBUG === 'true') {
+    // balas dengan ID yang dilihat bot (hapus DEBUG setelah selesai)
+    await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: msg.chat.id,
+        text: `DEBUG\nchat=${msg.chat.id}\nfrom=${msg.from?.id}\ncfg_chat=${env.GROUP_CHAT_ID}\ncfg_owner=${env.OWNER_ID}`,
+      }),
+    });
+  }
+
+  // hanya grup studio dan hanya CEO yang boleh memberi perintah
+  if (String(msg.chat.id) !== String(env.GROUP_CHAT_ID) || String(msg.from?.id) !== String(env.OWNER_ID))
     return json({ ok: true });
-  ctx.waitUntil(handleMessage(env, msg).catch((e) => console.error(e)));
+
+  ctx.waitUntil(
+    handleMessage(env, msg).catch((e) => {
+      console.error(e);
+      return sendMessage(env, '⚠ Error: ' + String(e).slice(0, 300), msg.message_id).catch(() => {});
+    })
+  );
   return json({ ok: true });
 }
 
@@ -30,12 +50,13 @@ async function handleMessage(env, msg) {
   const replyUser = msg.reply_to_message?.from?.username?.toLowerCase();
   const mentioned = lower.includes('@' + mine) || replyUser === mine;
 
-  if (!mentioned && !isCoordinator) return;
+  if (!mentioned && !isCoordinator) return; // agent biasa hanya jawab kalau dipanggil
 
   let agents = [];
   if (isCoordinator) {
     agents = (await env.DB.prepare('SELECT id, username, role, status FROM agents').all()).results;
     if (!mentioned) {
+      // pesan tanpa mention -> k1ng, kecuali ditujukan ke agent lain
       const toOthers = agents.some(
         (a) => a.id !== env.AGENT_NAME &&
           (lower.includes('@' + a.username.toLowerCase()) || replyUser === a.username.toLowerCase())
@@ -62,6 +83,7 @@ async function handleMessage(env, msg) {
   }
 }
 
+// ---------- Koordinator (k1ng) ----------
 async function coordinate(env, msg, text, agents) {
   const team = agents.filter((a) => a.id !== env.AGENT_NAME)
     .map((a) => `- ${a.id}: ${a.role}`).join('\n');
@@ -97,7 +119,7 @@ async function delegate(env, d, agents) {
   const taskId = res.meta.last_row_id;
 
   let ok = false;
-  const binding = env['AGENT_' + target.id.toUpperCase()];
+  const binding = env['AGENT_' + target.id.toUpperCase()]; // service binding ke worker agent
   if (binding) {
     try {
       const r = await binding.fetch('https://agent.internal/task', {
@@ -116,6 +138,7 @@ async function delegate(env, d, agents) {
   return { target, title, ok };
 }
 
+// ---------- Agent menerima tugas dari k1ng ----------
 async function taskEndpoint(req, env, ctx) {
   if (req.headers.get('authorization') !== `Bearer ${env.INTERNAL_SECRET}`)
     return new Response('forbidden', { status: 403 });

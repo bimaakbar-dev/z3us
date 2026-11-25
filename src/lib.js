@@ -62,7 +62,8 @@ async function viaWorkersAI(env, system, user) {
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
     max_tokens: 900,
   });
-  return String(out.response || '').trim();
+  const text = out?.response ?? out?.choices?.[0]?.message?.content ?? '';
+  return (typeof text === 'object' ? JSON.stringify(text) : String(text)).trim();
 }
 
 export async function askAI(env, system, user) {
